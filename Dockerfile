@@ -1,6 +1,6 @@
-FROM ubuntu:20.04 as base
+FROM ubuntu:22.04 AS base
 
-FROM base as builder
+FROM base AS builder
 
 ENV LANG=C.UTF-8
 
@@ -11,11 +11,12 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         curl \
+        git \
         libleptonica-dev \
         libtool \
         zlib1g-dev \
-    && mkdir src \
-    && cd src \
+    && mkdir /usr/src/jbig2 \
+    && cd /usr/src/jbig2 \
     && curl -L https://github.com/agl/jbig2enc/archive/ea6a40a2cbf05efb00f3418f2d0ad71232565beb.tar.gz --output jbig2.tgz \
     && tar xzf jbig2.tgz --strip-components=1 \
     && ./autogen.sh \
@@ -23,7 +24,15 @@ RUN apt-get update \
     && make \
     && make install
 
-FROM base
+RUN git clone https://github.com/ImageMagick/ImageMagick.git /usr/src/ImageMagick \
+    && cd /usr/src/ImageMagick \
+    && git checkout $(git tag --sort=-v:refname | head -n 1) \
+    && ./configure --enable-shared \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig
+
+FROM base AS final
 
 ENV LANG=C.UTF-8
 
@@ -44,23 +53,18 @@ RUN apt-get update && \
 
 RUN python3 -m venv --system-site-packages /appenv \
     && . /appenv/bin/activate \
-    && pip install --upgrade pip
+    && pip install --upgrade pip \
+    && pip install --no-cache-dir \
+        plumbum==1.9.0 \
+        ocrmypdf==16.9.0 \
+        watchdog==6.0.0 \
+        requests==2.32.3
 
-# Copy jbig2 from builder image
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY --from=builder /usr/local/lib/ /usr/local/lib/
 
-# Pull in ocrmypdf via requirements.txt and install pinned version
-COPY src/requirements.txt /app/
-
-RUN . /appenv/bin/activate; \
-    pip install -r /app/requirements.txt
-
 COPY src/ /app/
 
-# Create restricted privilege user docker:docker to drop privileges
-# to later. We retain root for the entrypoint in order to install
-# additional tesseract OCR language packages.
 RUN groupadd -g 1000 docker && \
     useradd -u 1000 -g docker -N --home-dir /app docker && \
     mkdir /config /input /output /ocrtemp /archive && \
@@ -70,4 +74,3 @@ RUN groupadd -g 1000 docker && \
 VOLUME ["/config", "/input", "/output", "/ocrtemp", "/archive"]
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-
